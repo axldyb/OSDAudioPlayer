@@ -108,6 +108,9 @@ typedef NS_ENUM(NSInteger, OSDAudioPlayerState) {
 @property (nonatomic, strong, readonly) OSDAudioPlayerItem *currentlyPlayingItem;
 @property (nonatomic, assign, readonly) OSDAudioPlayerState currentState;
 
+- (BOOL)isPlaying;
+- (BOOL)isPaused;
+
 - (NSTimeInterval)currentItemProgress;
 - (NSTimeInterval)loadedProgress;
 - (NSTimeInterval)currentItemDuration;
@@ -151,5 +154,12 @@ typedef NS_ENUM(NSInteger, OSDAudioPlayerState) {
 - (NSError *)OSDAudioPlayerError;
 
 @end
+
+
+NS_INLINE NSString *OSDAudioPlayerTimeToString(NSTimeInterval time) {
+    NSInteger minutes = (NSInteger)(floor(time) / 60);
+    NSInteger seconds = ((NSInteger)floor(time) % 60);
+    return [NSString stringWithFormat:@"%li:%02li",minutes,seconds];
+}
 
 #endif

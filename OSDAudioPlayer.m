@@ -214,7 +214,6 @@ static void *OSDAudioPlayerPlayerItemStatusObserverContext = &OSDAudioPlayerPlay
     AVKeyValueStatus status = [asset statusOfValueForKey:kOSDTracks error:&trackError];
     if (status == AVKeyValueStatusLoaded) {
         if ([AVAsset instancesRespondToSelector:@selector(isPlayable)] && ![asset isPlayable]) {
-#warning Change State
             OSDDebugLog(@"Can't play item");
             NSError *error = [[NSError alloc] initWithDomain:OSDAudioPlayerErrorDomain
                                                         code:OSDAudioPlayerErrorAssetNotPlayable
@@ -284,6 +283,14 @@ static void *OSDAudioPlayerPlayerItemStatusObserverContext = &OSDAudioPlayerPlay
     }
     [self setCurrentState:_seekRestoreState notify:YES];
     _seekRestoreState = OSDAudioPlayerStateUnknown;
+}
+
+
+- (BOOL)isPlaying {
+    return self.currentState == OSDAudioPlayerStatePlaying;
+}
+- (BOOL)isPaused {
+    return self.currentState == OSDAudioPlayerStatePaused;
 }
 
 #pragma mark -
@@ -420,7 +427,7 @@ static void *OSDAudioPlayerPlayerItemStatusObserverContext = &OSDAudioPlayerPlay
 #pragma mark -
 #pragma mark - Player
 - (void)destroyPlayer {
-    OSDDebugLog(@"Destorying player");
+    OSDDebugLog(@"Destroying player");
     [[MPNowPlayingInfoCenter defaultCenter] setNowPlayingInfo:nil];
 	if (_player) {
 		[_player removeObserver:self forKeyPath:kOSDRate context:OSDAudioPlayerRateChangeObservationContext];
