@@ -110,10 +110,13 @@ typedef NS_ENUM(NSInteger, OSDAudioPlayerState) {
 
 - (BOOL)isPlaying;
 - (BOOL)isPaused;
+- (BOOL)isLoading;
 
 - (NSTimeInterval)currentItemProgress;
 - (NSTimeInterval)loadedProgress;
 - (NSTimeInterval)currentItemDuration;
+
+- (float_t)progress;
 
 #pragma mark -
 #pragma mark - Playback

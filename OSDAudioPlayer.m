@@ -92,6 +92,14 @@ static void *OSDAudioPlayerPlayerItemStatusObserverContext = &OSDAudioPlayerPlay
     return 0.0;
 }
 
+- (float_t)progress {
+    NSTimeInterval dur = [self currentItemDuration];
+    if (dur == 0.0) {
+        return 0.0;
+    }
+    return [self currentItemProgress] / dur;
+}
+
 #pragma mark -
 #pragma mark - Player Queue
 - (void)queueItem:(OSDAudioPlayerItem *)item {
@@ -163,6 +171,10 @@ static void *OSDAudioPlayerPlayerItemStatusObserverContext = &OSDAudioPlayerPlay
         _updateNotifyTimer = [NSTimer scheduledTimerWithTimeInterval:0.2 target:self selector:@selector(updateProgress:) userInfo:nil repeats:YES];
     }
 }
+- (void)invalidateUpdateNotifyTimer {
+    [_updateNotifyTimer invalidate];
+    _updateNotifyTimer = nil;
+}
 - (void)pause {
     _pausedFromInteruption = NO;
     [_updateNotifyTimer invalidate];
@@ -170,6 +182,7 @@ static void *OSDAudioPlayerPlayerItemStatusObserverContext = &OSDAudioPlayerPlay
     [self.player pause];
     [self setCurrentState:OSDAudioPlayerStatePaused notify:YES];
     [[NSNotificationCenter defaultCenter] postNotificationName:OSDAudioPlayerDidPauseNotification object:self];
+    [self invalidateUpdateNotifyTimer];
 }
 - (void)stop {
     _pausedFromRouteChange = NO;
@@ -249,7 +262,6 @@ static void *OSDAudioPlayerPlayerItemStatusObserverContext = &OSDAudioPlayerPlay
     
 }
 
-
 - (void)beginSeeking {
     [_updateNotifyTimer invalidate];
     _updateNotifyTimer = nil;
@@ -285,12 +297,14 @@ static void *OSDAudioPlayerPlayerItemStatusObserverContext = &OSDAudioPlayerPlay
     _seekRestoreState = OSDAudioPlayerStateUnknown;
 }
 
-
 - (BOOL)isPlaying {
     return self.currentState == OSDAudioPlayerStatePlaying;
 }
 - (BOOL)isPaused {
     return self.currentState == OSDAudioPlayerStatePaused;
+}
+- (BOOL)isLoading {
+    return (self.currentState == OSDAudioPlayerStateLoading || self.currentState == OSDAudioPlayerStateBuffering);
 }
 
 #pragma mark -
@@ -388,10 +402,14 @@ static void *OSDAudioPlayerPlayerItemStatusObserverContext = &OSDAudioPlayerPlay
         
         switch (self.endPlaybackRule) {
             case OSDAudioPlayerCurrentItemEndPlayNext:
-                [self playNextItem];
+                if (![self playNextItem]) {
+                    [self stop];
+                }
                 break;
             case OSDAudioPlayerCurrentItemEndRepeat:
-                [self playCurrentItem];
+                if (![self playCurrentItem]) {
+                    [self stop];
+                }
                 break;
             case OSDAudioPlayerCurrentItemEndStop:
                 [self stop];
@@ -429,6 +447,8 @@ static void *OSDAudioPlayerPlayerItemStatusObserverContext = &OSDAudioPlayerPlay
 - (void)destroyPlayer {
     OSDDebugLog(@"Destroying player");
     [[MPNowPlayingInfoCenter defaultCenter] setNowPlayingInfo:nil];
+    _currentlyPlayingItem = nil;
+    [self invalidateUpdateNotifyTimer];
 	if (_player) {
 		[_player removeObserver:self forKeyPath:kOSDRate context:OSDAudioPlayerRateChangeObservationContext];
         
