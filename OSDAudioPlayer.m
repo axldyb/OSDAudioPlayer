@@ -23,8 +23,6 @@ static void _OSDAudioDebugLog(NSString *fmt, ...) {
     #define OSDDebugLog(fmt, ...)
 #endif
 
-void OSDAudioRouteChangeListenerCallback(void *inUserData, AudioSessionPropertyID inPropertyID, UInt32 inPropertyValueSize, const void *inPropertyValue);
-
 id static _sharedOSDAudioPlayer = nil;
 
 static NSString *const kOSDTracks      = @"tracks";
@@ -39,6 +37,8 @@ static void *OSDAudioPlayerPlayerItemStatusObserverContext = &OSDAudioPlayerPlay
 
 @interface OSDAudioPlayer ()
 
+@property (nonatomic, strong, readwrite) OSDAudioPlayerItem *currentlyPlayingItem;
+
 @property (nonatomic, strong) NSMutableArray *itemQueue;
 
 @property (nonatomic, assign) BOOL pausedFromInteruption;
@@ -46,6 +46,7 @@ static void *OSDAudioPlayerPlayerItemStatusObserverContext = &OSDAudioPlayerPlay
 @property (nonatomic, assign) BOOL routeChangeDuringPause;
 
 @property (nonatomic, strong) NSTimer *updateNotifyTimer;
+@property (nonatomic, strong) NSTimer *updateNowPlayingInfo;
 
 @property (nonatomic, assign) BOOL calledBeginSeeking;
 @property (nonatomic) float_t seekRestoreRate;
@@ -54,6 +55,13 @@ static void *OSDAudioPlayerPlayerItemStatusObserverContext = &OSDAudioPlayerPlay
 @end
 
 @implementation OSDAudioPlayer
+
+- (void)setCurrentlyPlayingItem:(OSDAudioPlayerItem *)currentlyPlayingItem {
+    _currentlyPlayingItem = currentlyPlayingItem;
+    if (!currentlyPlayingItem) {
+        NSLog(@"nil current");
+    }
+}
 
 #pragma mark -
 #pragma mark - Metadata
@@ -127,7 +135,7 @@ static void *OSDAudioPlayerPlayerItemStatusObserverContext = &OSDAudioPlayerPlay
 }
 
 - (NSArray *)queuedItems {
-    return [NSArray arrayWithArray:self.itemQueue];
+    return [self.itemQueue copy];
 }
 
 #pragma mark -
@@ -143,41 +151,30 @@ static void *OSDAudioPlayerPlayerItemStatusObserverContext = &OSDAudioPlayerPlay
     return NO;
 }
 - (BOOL)playCurrentItem {
-    if (_currentlyPlayingItem) {
-        [self playItem:_currentlyPlayingItem];
+    if (self.currentlyPlayingItem) {
+        [self playItem:self.currentlyPlayingItem];
         return YES;
     }
     return [self playNextItem];
 }
 - (void)playItem:(OSDAudioPlayerItem *)item {
-    [self willChangeValueForKey:@"currentlyPlayingItem"];
-    _currentlyPlayingItem = item;
-    [self didChangeValueForKey:@"currentlyPlayingItem"];
+    self.currentlyPlayingItem = item;
     [self updateWillPlayItem];
-    [self playAudioFromURL:_currentlyPlayingItem.itemURL];
+    [self playAudioFromURL:self.currentlyPlayingItem.itemURL];
 }
 
 - (void)play {
     dispatch_async(dispatch_get_main_queue(), ^{
-        _pausedFromRouteChange = NO;
+        self.pausedFromRouteChange = NO;
         [self setupUpdateNotifyTimerIfNeeded];
         [self.player play];
         [self setCurrentState:OSDAudioPlayerStatePlaying notify:YES];
         [[NSNotificationCenter defaultCenter] postNotificationName:OSDAudioPlayerDidPlayNotification object:self];
+        [[UIApplication sharedApplication] beginReceivingRemoteControlEvents];
+        [self updateNowPlayingInfo];
     });
 }
-- (void)setupUpdateNotifyTimerIfNeeded {
-    if (!_updateNotifyTimer) {
-        _updateNotifyTimer = [NSTimer scheduledTimerWithTimeInterval:0.2 target:self selector:@selector(updateProgress:) userInfo:nil repeats:YES];
-    }
-}
-- (void)invalidateUpdateNotifyTimer {
-    [_updateNotifyTimer invalidate];
-    _updateNotifyTimer = nil;
-}
 - (void)pause {
-    _pausedFromInteruption = NO;
-    [_updateNotifyTimer invalidate];
     _updateNotifyTimer = nil;
     [self.player pause];
     [self setCurrentState:OSDAudioPlayerStatePaused notify:YES];
@@ -185,12 +182,15 @@ static void *OSDAudioPlayerPlayerItemStatusObserverContext = &OSDAudioPlayerPlay
     [self invalidateUpdateNotifyTimer];
 }
 - (void)stop {
-    _pausedFromRouteChange = NO;
-    _pausedFromInteruption = NO;
+    self.pausedFromRouteChange = NO;
+    self.pausedFromInteruption = NO;
     [self.player pause];
-    [[MPNowPlayingInfoCenter defaultCenter] setNowPlayingInfo:nil];
     [self destroyPlayer];
     [self setCurrentState:OSDAudioPlayerStateStopped notify:YES];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [[MPNowPlayingInfoCenter defaultCenter] setNowPlayingInfo:nil];
+        [[UIApplication sharedApplication] endReceivingRemoteControlEvents];
+    });
 }
 
 - (void)playAudioFromURL:(NSURL *)url {
@@ -256,15 +256,47 @@ static void *OSDAudioPlayerPlayerItemStatusObserverContext = &OSDAudioPlayerPlay
 }
 
 - (void)updateInfoDictionary {
+    OSDAudioPlayerItem *item = self.currentlyPlayingItem;
+    if (!item) {
+        return;
+    }
     
+    NSMutableDictionary *info = [NSMutableDictionary dictionaryWithCapacity:4];
+    info[MPMediaItemPropertyTitle] = item.displayName;
+    info[MPMediaItemPropertyMediaType] = @(item.mediaType);
+    info[MPNowPlayingInfoPropertyPlaybackRate] = @(self.player.rate);
+    info[MPMediaItemPropertyPlaybackDuration] = @([self currentItemDuration]);
+    info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = @([self currentItemProgress]);
+    
+    for (AVMetadataItem *item in [self.player.currentItem.asset commonMetadata]) {
+        if ([[item commonKey] isEqualToString:AVMetadataCommonKeyArtist]) {
+            info[MPMediaItemPropertyArtist] = [item value];
+        }
+        if ([[item commonKey] isEqualToString:AVMetadataCommonKeyAlbumName]) {
+            info[MPMediaItemPropertyAlbumTitle] = [item value];
+        }
+        if ([[item commonKey] isEqualToString:AVMetadataCommonKeyArtwork]) {
+            UIImage *image = nil;
+            if ([item.keySpace isEqualToString:AVMetadataKeySpaceID3]) {
+                NSDictionary *d = (NSDictionary *)[item value];
+                image = [UIImage imageWithData:[d objectForKey:@"data"]];
+            } else if ([item.keySpace isEqualToString:AVMetadataKeySpaceiTunes]) {
+                image= [UIImage imageWithData:(NSData *)item.value];
+            }
+            if (image) {
+                info[MPMediaItemPropertyArtwork] = [[MPMediaItemArtwork alloc] initWithImage:image];
+            }
+        }
+    }
+    
+    [[MPNowPlayingInfoCenter defaultCenter] setNowPlayingInfo:info];
 }
 - (void)changeVolume {
     
 }
 
 - (void)beginSeeking {
-    [_updateNotifyTimer invalidate];
-    _updateNotifyTimer = nil;
+    [self invalidateUpdateNotifyTimer];
     _calledBeginSeeking = YES;
     _seekRestoreState = self.currentState;
     _seekRestoreRate = self.player.rate;
@@ -308,6 +340,23 @@ static void *OSDAudioPlayerPlayerItemStatusObserverContext = &OSDAudioPlayerPlay
 }
 
 #pragma mark -
+#pragma mark - Play Update Timer
+- (void)setupUpdateNotifyTimerIfNeeded {
+    if (![self.updateNotifyTimer isValid]) {
+        self.updateNotifyTimer = [NSTimer scheduledTimerWithTimeInterval:0.2 target:self selector:@selector(updateProgress:) userInfo:nil repeats:YES];
+    }
+    if (![self.updateNowPlayingInfo isValid]) {
+        self.updateNowPlayingInfo = [NSTimer scheduledTimerWithTimeInterval:30.0 target:self selector:@selector(updateInfoDictionary) userInfo:nil repeats:YES];
+    }
+}
+- (void)invalidateUpdateNotifyTimer {
+    [self.updateNotifyTimer invalidate];
+    self.updateNotifyTimer = nil;
+    [self.updateNowPlayingInfo invalidate];
+    self.updateNowPlayingInfo = nil;
+}
+
+#pragma mark -
 #pragma mark - Notification Helpers
 - (void)updatedQueue {
     OSDDebugLog(@"Item queue did change items (%lu)",self.itemQueue.count);
@@ -342,7 +391,7 @@ static void *OSDAudioPlayerPlayerItemStatusObserverContext = &OSDAudioPlayerPlay
 
 - (void)setCurrentState:(OSDAudioPlayerState)currentState notify:(BOOL)sendNotification {
     if (self.routeChangeDuringPause) {
-        _routeChangeDuringPause = NO;
+        self.routeChangeDuringPause = NO;
         return;
     }
     _currentState = currentState;
@@ -365,20 +414,33 @@ static void *OSDAudioPlayerPlayerItemStatusObserverContext = &OSDAudioPlayerPlay
     }
 }
 
+- (AVAudioSession *)audioSession {
+    return [AVAudioSession sharedInstance];
+}
+
 #pragma mark -
 #pragma mark - Initialization
 - (instancetype)init {
 	self = [super init];
 	if (self) {
-		[[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(currentItemDidPlayToEndNotification:) name:AVPlayerItemDidPlayToEndTimeNotification object:nil];
-        [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(playbackStalledNotification:) name:AVPlayerItemPlaybackStalledNotification object:nil];
-        [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(playbackInterruptionNotification:) name:AVAudioSessionInterruptionNotification object:nil];
-        
-        [[UIApplication sharedApplication] beginReceivingRemoteControlEvents];
-        
-        AudioSessionAddPropertyListener(kAudioSessionProperty_AudioRouteChange, OSDAudioRouteChangeListenerCallback, (__bridge void *)(self));
-        
-        [self setCurrentState:OSDAudioPlayerStateUnknown notify:NO];
+		dispatch_async(dispatch_get_main_queue(), ^{
+            NSError *sessionError = nil;
+            if (![self.audioSession setCategory:AVAudioSessionCategoryPlayback error:&sessionError]) {
+                OSDDebugLog(@"Can't set session category: %@",sessionError);
+            }
+            NSError *activeSessionError = nil;
+            if (![self.audioSession setActive:YES error:&activeSessionError]) {
+                OSDDebugLog(@"Can't set session to active: %@",activeSessionError);
+            }
+            
+            [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(currentItemDidPlayToEndNotification:) name:AVPlayerItemDidPlayToEndTimeNotification object:nil];
+            [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(playbackStalledNotification:) name:AVPlayerItemPlaybackStalledNotification object:nil];
+            [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(playbackInterruptionNotification:) name:AVAudioSessionInterruptionNotification object:nil];
+            
+            [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(audioPlayerRouteChangedNotification:) name:AVAudioSessionRouteChangeNotification object:nil];
+            
+            [self setCurrentState:OSDAudioPlayerStateUnknown notify:NO];
+        });
         
         _playbackRule = OSDAudioPlayerAutoPlayWhenReady;
         _endPlaybackRule = OSDAudioPlayerCurrentItemEndPlayNext;
@@ -423,10 +485,12 @@ static void *OSDAudioPlayerPlayerItemStatusObserverContext = &OSDAudioPlayerPlay
     AVAudioSessionInterruptionType interruptionType = [notif.userInfo[AVAudioSessionInterruptionTypeKey] unsignedIntegerValue];
     if (interruptionType == AVAudioSessionInterruptionTypeBegan && _currentState == OSDAudioPlayerStatePlaying) {
         [self pause];
-        _pausedFromInteruption = YES;
-    } else if (interruptionType == AVAudioSessionInterruptionTypeEnded && !(!_pausedFromRouteChange && _pausedFromInteruption)) {
-        [self play];
-        _pausedFromInteruption = NO;
+        self.pausedFromInteruption = YES;
+    } else if (interruptionType == AVAudioSessionInterruptionTypeEnded) {
+        if ((!self.pausedFromRouteChange && self.pausedFromInteruption)) {
+            [self play];
+            self.pausedFromInteruption = NO;
+        }
     }
     
 }
@@ -447,7 +511,7 @@ static void *OSDAudioPlayerPlayerItemStatusObserverContext = &OSDAudioPlayerPlay
 - (void)destroyPlayer {
     OSDDebugLog(@"Destroying player");
     [[MPNowPlayingInfoCenter defaultCenter] setNowPlayingInfo:nil];
-    _currentlyPlayingItem = nil;
+    self.currentlyPlayingItem = nil;
     [self invalidateUpdateNotifyTimer];
 	if (_player) {
 		[_player removeObserver:self forKeyPath:kOSDRate context:OSDAudioPlayerRateChangeObservationContext];
@@ -514,6 +578,45 @@ static void *OSDAudioPlayerPlayerItemStatusObserverContext = &OSDAudioPlayerPlay
 	}
 }
 
+#pragma mark -
+#pragma mark - Route Changed
+- (void)audioPlayerRouteChangedNotification:(NSNotification *)notif {
+    AVAudioSessionRouteChangeReason reason = [notif.userInfo[AVAudioSessionRouteChangeReasonKey] unsignedIntegerValue];
+    
+    if ([self isPaused]) {
+        self.routeChangeDuringPause = YES;
+    } else if (reason == AVAudioSessionRouteChangeReasonOldDeviceUnavailable) {
+        self.pausedFromRouteChange = YES;
+        [self pause];
+    }
+    
+}
+
+@end
+
+
+@implementation OSDAudioPlayer (UIResponder)
+
+- (void)remoteControlReceivedWithEvent:(UIEvent *)event {
+    if (event.type == UIEventTypeRemoteControl) {
+        if (event.subtype == UIEventSubtypeRemoteControlPlay) {
+            [self play];
+        }
+        if (event.subtype == UIEventSubtypeRemoteControlPause) {
+            [self pause];
+        }
+        if (event.subtype == UIEventSubtypeRemoteControlStop) {
+            [self stop];
+        }
+        if (event.subtype == UIEventSubtypeRemoteControlNextTrack) {
+            [self playNextItem];
+        }
+        if (event.subtype == UIEventSubtypeRemoteControlPreviousTrack) {
+            
+        }
+    }
+}
+
 @end
 
 
@@ -531,6 +634,7 @@ static void *OSDAudioPlayerPlayerItemStatusObserverContext = &OSDAudioPlayerPlay
     OSDAudioPlayerItem *item = [[self alloc] init];
     item.itemURL = itemURL;
     item.displayName = (displayName) ?: [[itemURL path] lastPathComponent];
+    item.mediaType = MPMediaTypeMusic;
     [item.userInfo addEntriesFromDictionary:userInfo];
     
     return item;
@@ -548,6 +652,7 @@ static void *OSDAudioPlayerPlayerItemStatusObserverContext = &OSDAudioPlayerPlay
     item.itemURL = [self.itemURL copyWithZone:zone];
     item.displayName = [self.displayName copyWithZone:zone];
     item.userInfo = [self.userInfo copyWithZone:zone];
+    item.mediaType = self.mediaType;
     return item;
 }
 
@@ -589,27 +694,6 @@ static void *OSDAudioPlayerPlayerItemStatusObserverContext = &OSDAudioPlayerPlay
 }
 
 @end
-
-/**
- This code was taken from http://developer.apple.com/library/ios/#samplecode/AddMusic/Listings/Classes_MainViewController_m.html#//apple_ref/doc/uid/DTS40008845-Classes_MainViewController_m-DontLinkElementID_6
- */
-void OSDAudioRouteChangeListenerCallback(void *inUserData, AudioSessionPropertyID inPropertyID, UInt32 inPropertyValueSize, const void *inPropertyValue) {
-    if (inPropertyID != kAudioSessionProperty_AudioRouteChange) return;
-    
-    if ([[OSDAudioPlayer sharedPlayer] currentState] != OSDAudioPlayerStatePlaying && [[OSDAudioPlayer sharedPlayer] currentState] == OSDAudioPlayerStatePaused) {
-        [[OSDAudioPlayer sharedPlayer] setRouteChangeDuringPause:YES];
-    } else {
-        CFDictionaryRef routeChangeDictionary = inPropertyValue;
-        CFNumberRef routeChangeReasonRef = CFDictionaryGetValue(routeChangeDictionary, CFSTR (kAudioSession_AudioRouteChangeKey_Reason));
-        SInt32 routeChangeReason;
-        CFNumberGetValue(routeChangeReasonRef, kCFNumberSInt32Type, &routeChangeReason);
-        
-        if (routeChangeReason == kAudioSessionRouteChangeReason_OldDeviceUnavailable) {
-            [[OSDAudioPlayer sharedPlayer] setPausedFromRouteChange:YES];
-            [[OSDAudioPlayer sharedPlayer] pause];
-        }
-    }
-}
 
 NSString * const OSDAudioPlayerQueueDidUpdateNotification = @"OSDAudioPlayerQueueDidUpdateNotification";
 NSString * const OSDAudioPlayerWillPlayItemNotification = @"OSDAudioPlayerWillPlayItemNotification";

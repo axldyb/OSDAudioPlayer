@@ -78,6 +78,8 @@ typedef NS_ENUM(NSInteger, OSDAudioPlayerState) {
 
 + (instancetype)newPlayerItemWithURL:(NSURL *)itemURL displayName:(NSString *)displayName userInfo:(NSDictionary *)userInfo;
 
+@property (nonatomic) MPMediaType mediaType;
+
 @end
 
 /*!
@@ -138,7 +140,7 @@ typedef NS_ENUM(NSInteger, OSDAudioPlayerState) {
 #pragma mark -
 #pragma mark - Audio Player
 @property (nonatomic, strong, readonly) AVPlayer *player;
-@property (nonatomic, weak, readonly) AVAudioSession *audioSession;
+@property (nonatomic, strong, readonly) AVAudioSession *audioSession;
 
 - (void)destroyPlayer;
 
@@ -155,6 +157,12 @@ typedef NS_ENUM(NSInteger, OSDAudioPlayerState) {
 @interface NSDictionary (OSDAudioPlayerAdditions)
 
 - (NSError *)OSDAudioPlayerError;
+
+@end
+
+@interface OSDAudioPlayer (UIResponder)
+
+- (void)remoteControlReceivedWithEvent:(UIEvent *)event;
 
 @end
 
