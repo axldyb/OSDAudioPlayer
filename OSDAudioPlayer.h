@@ -134,6 +134,7 @@ typedef NS_ENUM(NSInteger, OSDAudioPlayerState) {
 
 - (void)beginSeeking;
 - (void)seekToProgress:(NSTimeInterval)progress;
+- (void)seekToProgress:(NSTimeInterval)progress completion:(void(^)(BOOL finished))completion;
 - (void)endSeeking;
 
 

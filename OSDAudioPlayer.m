@@ -49,6 +49,7 @@ static void *OSDAudioPlayerPlayerItemStatusObserverContext = &OSDAudioPlayerPlay
 @property (nonatomic, strong) NSTimer *updateNowPlayingInfo;
 
 @property (nonatomic, assign) BOOL calledBeginSeeking;
+@property (nonatomic, assign, getter = isSeekPerforming) BOOL seekPerforming;
 @property (nonatomic) float_t seekRestoreRate;
 @property (nonatomic) OSDAudioPlayerState seekRestoreState;
 
@@ -297,36 +298,45 @@ static void *OSDAudioPlayerPlayerItemStatusObserverContext = &OSDAudioPlayerPlay
 
 - (void)beginSeeking {
     [self invalidateUpdateNotifyTimer];
-    _calledBeginSeeking = YES;
-    _seekRestoreState = self.currentState;
-    _seekRestoreRate = self.player.rate;
+    self.calledBeginSeeking = YES;
+    self.seekRestoreState = self.currentState;
+    self.seekRestoreRate = self.player.rate;
     self.player.rate = 0.0;
     [self.player pause];
     [self setCurrentState:OSDAudioPlayerStateSeeking notify:YES];
 }
 - (void)seekToProgress:(NSTimeInterval)progress {
-    if (!_calledBeginSeeking) {
+    [self seekToProgress:progress completion:nil];
+}
+- (void)seekToProgress:(NSTimeInterval)progress completion:(void(^)(BOOL finished))completion {
+    if (!self.calledBeginSeeking) {
         OSDDebugLog(@"Didn't call - beginSeeking  this will cause problems");
     }
-    
-    if (progress == 0.0) {
+    double_t duration = [self currentItemDuration];
+    if (duration == 0.0 || [self isSeekPerforming]) {
         return;
     }
-    
-    if (isfinite(progress)) {
-        [self.player seekToTime:CMTimeMakeWithSeconds(progress, NSEC_PER_SEC)];
+    if (isfinite(duration)) {
+        typeof(self) __weak welf = self;
+        [self.player seekToTime:CMTimeMakeWithSeconds(progress, NSEC_PER_SEC) completionHandler:^(BOOL finished) {
+            welf.seekPerforming = !finished;
+            [welf updateProgress:nil];
+            if (completion) {
+                completion(finished);
+            }
+        }];
     }
 }
 - (void)endSeeking {
-    _calledBeginSeeking = NO;
+    self.calledBeginSeeking = NO;
     [self setupUpdateNotifyTimerIfNeeded];
-    self.player.rate = _seekRestoreRate;
-    _seekRestoreRate = 0.0;
+    self.player.rate = self.seekRestoreRate;
+    self.seekRestoreRate = 0.0;
     if (_seekRestoreState == OSDAudioPlayerStatePlaying) {
         [self.player play];
     }
     [self setCurrentState:_seekRestoreState notify:YES];
-    _seekRestoreState = OSDAudioPlayerStateUnknown;
+    self.seekRestoreState = OSDAudioPlayerStateUnknown;
 }
 
 - (BOOL)isPlaying {
