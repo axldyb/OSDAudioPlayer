@@ -193,7 +193,7 @@ typedef NS_ENUM(NSInteger, OSDAudioPlayerState) {
 NS_INLINE NSString *OSDAudioPlayerTimeToString(NSTimeInterval time) {
     NSInteger minutes = (NSInteger)(floor(time) / 60);
     NSInteger seconds = ((NSInteger)floor(time) % 60);
-    return [NSString stringWithFormat:@"%li:%02li",minutes,seconds];
+    return [NSString stringWithFormat:@"%li:%02li",(long)minutes,(long)seconds];
 }
 
 #endif

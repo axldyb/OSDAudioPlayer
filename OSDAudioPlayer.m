@@ -32,20 +32,19 @@
 #import "OSDAudioPlayer.h"
 
 static void _OSDAudioDebugLog(NSString *fmt, ...) {
+#if DEBUG && OSD_AUDIO_PLAYER_DEBUG_LOG
     va_list arguments;
     va_start(arguments, fmt);
     NSString *string = [[NSString alloc] initWithFormat:fmt arguments:arguments];
     va_end(arguments);
     printf("OSDAudioPlayer: %s\n",[string UTF8String]);
-}
-
-#if DEBUG && OSD_AUDIO_PLAYER_DEBUG_LOG
-    #define OSDDebugLog(fmt, ...) _OSDAudioDebugLog(fmt, ##__VA_ARGS__)
-#else
-    #define OSDDebugLog(fmt, ...)
 #endif
+}
+#define OSDDebugLog(fmt, ...) _OSDAudioDebugLog(fmt, ##__VA_ARGS__)
 
-id static _sharedOSDAudioPlayer = nil;
+
+
+static OSDAudioPlayer *_sharedOSDAudioPlayer = nil;
 
 static NSString *const kOSDTracks      = @"tracks";
 static NSString *const kOSDStatus      = @"status";
@@ -78,13 +77,6 @@ static void *OSDAudioPlayerPlayerItemStatusObserverContext = &OSDAudioPlayerPlay
 @end
 
 @implementation OSDAudioPlayer
-
-- (void)setCurrentlyPlayingItem:(OSDAudioPlayerItem *)currentlyPlayingItem {
-    _currentlyPlayingItem = currentlyPlayingItem;
-    if (!currentlyPlayingItem) {
-        NSLog(@"nil current");
-    }
-}
 
 #pragma mark -
 #pragma mark - Metadata
