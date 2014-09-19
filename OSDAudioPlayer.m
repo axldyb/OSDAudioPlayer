@@ -196,6 +196,22 @@ static void *OSDAudioPlayerPlayerItemStatusObserverContext = &OSDAudioPlayerPlay
     [[NSNotificationCenter defaultCenter] postNotificationName:OSDAudioPlayerDidPauseNotification object:self];
     [self invalidateUpdateNotifyTimer];
 }
+
+- (void)playOrPause
+{
+    if (self.player.rate > 0.0) {
+        [self pause];
+    } else {
+        if (self.player) {
+            [self play];
+        } else {
+            if (self.currentlyPlayingItem) {
+                [self playItem:self.currentlyPlayingItem];
+            }
+        }
+    }
+    [self updateNowPlayingInfo];
+}
 - (void)stop {
     self.pausedFromRouteChange = NO;
     self.pausedFromInteruption = NO;
@@ -283,23 +299,34 @@ static void *OSDAudioPlayerPlayerItemStatusObserverContext = &OSDAudioPlayerPlay
     info[MPMediaItemPropertyPlaybackDuration] = @([self currentItemDuration]);
     info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = @([self currentItemProgress]);
     
+    UIImage *image = nil;
+    if (item.itemImage) {
+        image = item.itemImage;
+        info[MPMediaItemPropertyArtwork] = [[MPMediaItemArtwork alloc] initWithImage:image];
+    }
+    
     for (AVMetadataItem *item in [self.player.currentItem.asset commonMetadata]) {
         if ([[item commonKey] isEqualToString:AVMetadataCommonKeyArtist]) {
             info[MPMediaItemPropertyArtist] = [item value];
         }
-        if ([[item commonKey] isEqualToString:AVMetadataCommonKeyAlbumName]) {
-            info[MPMediaItemPropertyAlbumTitle] = [item value];
-        }
-        if ([[item commonKey] isEqualToString:AVMetadataCommonKeyArtwork]) {
-            UIImage *image = nil;
-            if ([item.keySpace isEqualToString:AVMetadataKeySpaceID3]) {
-                NSDictionary *d = (NSDictionary *)[item value];
-                image = [UIImage imageWithData:[d objectForKey:@"data"]];
-            } else if ([item.keySpace isEqualToString:AVMetadataKeySpaceiTunes]) {
-                image= [UIImage imageWithData:(NSData *)item.value];
-            }
-            if (image) {
-                info[MPMediaItemPropertyArtwork] = [[MPMediaItemArtwork alloc] initWithImage:image];
+        if (nil == image){
+            if ([[item commonKey] isEqualToString:AVMetadataCommonKeyArtwork]) {
+                if ([item.keySpace isEqualToString:AVMetadataKeySpaceID3]) {
+                    if ([[[UIDevice currentDevice] systemVersion] floatValue] >= 8.0) {
+                        NSData *newImage = [item.value copyWithZone:nil];
+                        image = [UIImage imageWithData:newImage];
+                    } else {
+                        NSDictionary *dict = (NSDictionary *)[item value];
+                        if ([dict objectForKey:@"data"]) {
+                            image = [UIImage imageWithData:[dict objectForKey:@"data"]];
+                        }
+                    }
+                } else if ([item.keySpace isEqualToString:AVMetadataKeySpaceiTunes]) {
+                    image= [UIImage imageWithData:(NSData *)item.value];
+                }
+                if (image) {
+                    info[MPMediaItemPropertyArtwork] = [[MPMediaItemArtwork alloc] initWithImage:image];
+                }
             }
         }
     }
@@ -319,9 +346,11 @@ static void *OSDAudioPlayerPlayerItemStatusObserverContext = &OSDAudioPlayerPlay
     [self.player pause];
     [self setCurrentState:OSDAudioPlayerStateSeeking notify:YES];
 }
+
 - (void)seekToProgress:(NSTimeInterval)progress {
     [self seekToProgress:progress completion:nil];
 }
+
 - (void)seekToProgress:(NSTimeInterval)progress completion:(void(^)(BOOL finished))completion {
     if (!self.calledBeginSeeking) {
         OSDDebugLog(@"Didn't call - beginSeeking  this will cause problems");
@@ -341,6 +370,25 @@ static void *OSDAudioPlayerPlayerItemStatusObserverContext = &OSDAudioPlayerPlay
         }];
     }
 }
+
+- (void)seekForward
+{
+    [self beginSeeking];
+    if (self.player.currentItem.canPlayFastForward) {
+        self.player.rate = 10.0;
+        [self updateNowPlayingInfo];
+    }
+}
+
+- (void)seekBackwards
+{
+    [self beginSeeking];
+    if (self.player.currentItem.canPlayFastReverse) {
+        self.player.rate = -10.0;
+        [self updateNowPlayingInfo];
+    }
+}
+
 - (void)endSeeking {
     self.calledBeginSeeking = NO;
     [self setupUpdateNotifyTimerIfNeeded];
@@ -505,18 +553,18 @@ static void *OSDAudioPlayerPlayerItemStatusObserverContext = &OSDAudioPlayerPlay
         }
     });
 }
-- (void)playbackInterruptionNotification:(NSNotification *)notif {
-    AVAudioSessionInterruptionType interruptionType = [notif.userInfo[AVAudioSessionInterruptionTypeKey] unsignedIntegerValue];
-    if (interruptionType == AVAudioSessionInterruptionTypeBegan && _currentState == OSDAudioPlayerStatePlaying) {
-        [self pause];
-        self.pausedFromInteruption = YES;
-    } else if (interruptionType == AVAudioSessionInterruptionTypeEnded) {
-        if ((!self.pausedFromRouteChange && self.pausedFromInteruption)) {
+- (void)playbackInterruptionNotification:(NSNotification *)notif
+{
+    AVAudioSessionInterruptionType interruptType = [notif.userInfo[AVAudioSessionInterruptionTypeKey] unsignedIntegerValue];
+    
+    if ( AVAudioSessionInterruptionTypeEnded == interruptType ) {
+        AVAudioSessionInterruptionOptions interruptOption = [notif.userInfo[AVAudioSessionInterruptionOptionKey] unsignedIntegerValue];
+        
+        if (self.isPlaying && interruptOption == AVAudioSessionInterruptionOptionShouldResume) {
             [self play];
             self.pausedFromInteruption = NO;
         }
     }
-    
 }
 
 #pragma mark -
@@ -613,7 +661,7 @@ static void *OSDAudioPlayerPlayerItemStatusObserverContext = &OSDAudioPlayerPlay
         self.pausedFromRouteChange = YES;
         [self pause];
     }
-    
+    [self updateInfoDictionary];
 }
 
 @end
@@ -622,21 +670,45 @@ static void *OSDAudioPlayerPlayerItemStatusObserverContext = &OSDAudioPlayerPlay
 @implementation OSDAudioPlayer (UIResponder)
 
 - (void)remoteControlReceivedWithEvent:(UIEvent *)event {
+    
+    OSDDebugLog(@"%s - %lu", __PRETTY_FUNCTION__, event.subtype);
+    
     if (event.type == UIEventTypeRemoteControl) {
-        if (event.subtype == UIEventSubtypeRemoteControlPlay) {
-            [self play];
-        }
-        if (event.subtype == UIEventSubtypeRemoteControlPause) {
-            [self pause];
-        }
-        if (event.subtype == UIEventSubtypeRemoteControlStop) {
-            [self stop];
-        }
-        if (event.subtype == UIEventSubtypeRemoteControlNextTrack) {
-            [self playNextItem];
-        }
-        if (event.subtype == UIEventSubtypeRemoteControlPreviousTrack) {
-            
+        switch (event.subtype) {
+            case UIEventSubtypeRemoteControlPlay:
+                [self play];
+                break;
+            case UIEventSubtypeRemoteControlPause:
+                [self pause];
+                break;
+            case UIEventSubtypeRemoteControlStop:
+                [self stop];
+                break;
+            case UIEventSubtypeRemoteControlTogglePlayPause:
+                [self playOrPause];
+                break;
+            case UIEventSubtypeRemoteControlNextTrack:
+                //[self playNextItem];
+                OSDDebugLog(@"Remote wants to play next track");
+                break;
+            case UIEventSubtypeRemoteControlPreviousTrack:
+                //[self playNextItem];
+                OSDDebugLog(@"Remote wants to play previous item");
+                break;
+            case UIEventSubtypeRemoteControlBeginSeekingBackward:
+                [self seekBackwards];
+                break;
+            case UIEventSubtypeRemoteControlEndSeekingBackward:
+                [self endSeeking];
+                break;
+            case UIEventSubtypeRemoteControlBeginSeekingForward:
+                [self seekForward];
+                break;
+            case UIEventSubtypeRemoteControlEndSeekingForward:
+                [self endSeeking];
+                break;
+            default:
+                break;
         }
     }
 }
@@ -677,6 +749,7 @@ static void *OSDAudioPlayerPlayerItemStatusObserverContext = &OSDAudioPlayerPlay
     item.displayName = [self.displayName copyWithZone:zone];
     item.userInfo = [self.userInfo copyWithZone:zone];
     item.mediaType = self.mediaType;
+    item.itemImage = self.itemImage;
     return item;
 }
 
@@ -696,6 +769,9 @@ static void *OSDAudioPlayerPlayerItemStatusObserverContext = &OSDAudioPlayerPlay
         return NO;
     }
     if (![self.userInfo isEqualToDictionary:compare.userInfo]) {
+        return NO;
+    }
+    if (![self.itemImage isEqual:compare.itemImage]) {
         return NO;
     }
     

@@ -98,6 +98,8 @@ typedef NS_ENUM(NSInteger, OSDAudioPlayerState) {
 
 @property (nonatomic, strong) NSMutableDictionary *userInfo;
 
+@property (nonatomic, strong) UIImage *itemImage;
+
 + (instancetype)newPlayerItemWithURL:(NSURL *)itemURL displayName:(NSString *)displayName userInfo:(NSDictionary *)userInfo;
 
 @property (nonatomic) MPMediaType mediaType;
